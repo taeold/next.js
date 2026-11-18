@@ -2,7 +2,8 @@
 # them to a GitHub release named after the tag. Push a tag that starts with "browser-" to run it.
 #
 # The WASI binding is not built here. It is downloaded from the release in WASI_RELEASE, which holds
-# @next/swc-wasm-wasi from Next.js CI for the draft PR head this branch starts from.
+# @next/swc-wasm-wasi from Next.js CI for the draft PR head this branch starts from, re-stamped with the release's
+# version.
 name: next-build-in-browser release
 
 on:
@@ -59,7 +60,11 @@ jobs:
           mkdir -p "$out"
           (cd packages/next-env && pnpm pack --pack-destination "$out")
           (cd packages/next && pnpm pack --pack-destination "$out")
-          gh release download "$WASI_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern 'next-swc-wasm-wasi-*.tgz' --dir "$out"
+          # Next.js's CI binding, unchanged, re-stamped with this release's version (Next.js warns on a mismatch).
+          gh release download "$WASI_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern 'next-swc-wasm-wasi-*.tgz' --dir "$RUNNER_TEMP/wasi"
+          mkdir "$RUNNER_TEMP/wasi/pkg" && tar -xzf "$RUNNER_TEMP"/wasi/*.tgz -C "$RUNNER_TEMP/wasi/pkg"
+          version=$(node -p 'require("./packages/next/package.json").version')
+          (cd "$RUNNER_TEMP/wasi/pkg/package" && npm pkg set version="$version" && npm pack --pack-destination "$out")
           (cd "$out" && sha256sum *.tgz > SHA256SUMS && cat SHA256SUMS)
         env:
           GH_TOKEN: ${{ github.token }}
