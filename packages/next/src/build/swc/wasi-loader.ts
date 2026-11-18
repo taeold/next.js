@@ -43,6 +43,7 @@ export type NapiModuleLike = {
   emnapi: {
     addSendListener(worker: unknown): boolean
   }
+  PThread?: { pthreads: Record<number, unknown> }
   init(options: {
     instance: WebAssembly.Instance
     module: WebAssembly.Module
@@ -188,6 +189,11 @@ export async function instantiateWasiNapiModule(options: {
     },
     onError: options.onThreadError,
     beforeLoad: (worker) => napiModule.emnapi.addSendListener(worker),
+    // emnapi looks up a pthread's Worker in its own PThread table when async work completes, and
+    // this runtime's thread manager is a separate table. Without the entry, async `parse` crashes.
+    onThreadId: (threadId, worker) => {
+      if (napiModule.PThread) napiModule.PThread.pthreads[threadId] = worker
+    },
   })
   const imports = createWasiImportObject({
     module,

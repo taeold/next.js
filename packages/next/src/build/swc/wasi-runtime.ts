@@ -139,6 +139,7 @@ export async function createThreadRuntime(options: {
   wasiThreadsModuleSpecifier?: string
   onError: (error: Error, threadId: number | undefined) => void
   beforeLoad?: (worker: EmnapiWorkerLike) => void
+  onThreadId?: (threadId: number, worker: EmnapiWorkerLike) => void
   WorkerClass?: WorkerConstructor
   ThreadManagerClass?: ThreadManagerConstructor
 }): Promise<{
@@ -154,6 +155,7 @@ export async function createThreadRuntime(options: {
     wasiThreadsModuleSpecifier = '@emnapi/wasi-threads',
     onError,
     beforeLoad,
+    onThreadId,
     WorkerClass = Worker as unknown as WorkerConstructor,
   } = options
   const ThreadManagerClass =
@@ -167,6 +169,7 @@ export async function createThreadRuntime(options: {
       const threadId = nextThreadId(threadIds)
       this.pthreads[threadId] = worker
       worker.__emnapi_tid = threadId
+      onThreadId?.(threadId, worker)
       return threadId
     }
   }
