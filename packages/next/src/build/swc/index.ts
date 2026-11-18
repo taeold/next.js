@@ -361,6 +361,13 @@ async function loadWasiNapiWithFallback(): Promise<Binding> {
 
 async function loadWasiNapiBinding(importPath = ''): Promise<Binding> {
   const packageName = '@next/swc-wasm-wasi'
+  // An embedder that instantiated the binding itself, such as a browser host with its own thread
+  // pool and file system, passes the Node-API exports here instead of Next.js loading node:wasi.
+  const hostBindings = (globalThis as { __NEXT_WASI_NAPI_EXPORTS__?: RawBindings })
+    .__NEXT_WASI_NAPI_EXPORTS__
+  if (hostBindings) {
+    return createNapiBinding(hostBindings, hostBindings, packageName, 'wasi')
+  }
   const testDirectory = process.env.NEXT_TEST_WASI_DIR
   let packageDirectory: string
 
