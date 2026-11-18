@@ -2286,12 +2286,16 @@ export default async function build(
 
       process.env.NEXT_PHASE = PHASE_PRODUCTION_BUILD
 
-      staticWorker = createStaticWorker(config, {
-        numberOfWorkers,
-        debuggerPortOffset: getNextBuildDebuggerPortOffset({
-          kind: 'export-page',
-        }),
-      })
+      // Compile mode skips static checks and prerendering, so it never uses the static worker.
+      // Not starting it keeps compile mode free of child processes.
+      staticWorker = isCompileMode
+        ? undefined!
+        : createStaticWorker(config, {
+            numberOfWorkers,
+            debuggerPortOffset: getNextBuildDebuggerPortOffset({
+              kind: 'export-page',
+            }),
+          })
 
       const analysisBegin = process.hrtime()
       const staticCheckSpan = nextBuildSpan.traceChild('static-check')
@@ -4591,7 +4595,7 @@ export default async function build(
       if (config.output === 'export') {
         // TODO: When writeFullyStaticExport doesn't fail when staticWorker is passed moved this after writeFullyStaticExport.
         // End the worker here when it's output: export.
-        staticWorker.end()
+        staticWorker?.end()
         staticWorker = undefined! // Reset staticWorker to make sure it does not end in `finally`
 
         await nextBuildSpan
