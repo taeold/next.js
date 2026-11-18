@@ -883,7 +883,7 @@ function bindingToApi(
       this._nativeProject = nativeProject
 
       if (typeof binding.registerWorkerScheduler === 'function') {
-        runLoaderWorkerPool(binding, bindingPath)
+        runLoaderWorkerPool(binding, bindingPath, bindingType)
       }
     }
 
