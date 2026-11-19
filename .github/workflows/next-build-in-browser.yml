@@ -1,9 +1,8 @@
 # Builds the packages next-build-in-browser uses (https://github.com/taeold/next-build-in-browser) and attaches
 # them to a GitHub release named after the tag. Push a tag that starts with "browser-" to run it.
 #
-# The WASI binding is not built here. It is downloaded from the release in WASI_RELEASE, which holds
-# @next/swc-wasm-wasi from Next.js CI for the draft PR head this branch starts from, re-stamped with the release's
-# version.
+# The WASI binding is not built here: it comes from the release in WASI_RELEASE, built from this branch by
+# next-build-in-browser-wasi.yml, re-stamped with this release's version.
 name: next-build-in-browser release
 
 on:
@@ -15,7 +14,7 @@ permissions:
 
 env:
   NEXT_TELEMETRY_DISABLED: 1
-  WASI_RELEASE: wasi-20088dcd
+  WASI_RELEASE: wasi-20261119b
 
 jobs:
   release:
@@ -60,7 +59,7 @@ jobs:
           mkdir -p "$out"
           (cd packages/next-env && pnpm pack --pack-destination "$out")
           (cd packages/next && pnpm pack --pack-destination "$out")
-          # Next.js's CI binding, unchanged, re-stamped with this release's version (Next.js warns on a mismatch).
+          # The WASI binding, re-stamped with this release's version (Next.js warns on a mismatch).
           gh release download "$WASI_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern 'next-swc-wasm-wasi-*.tgz' --dir "$RUNNER_TEMP/wasi"
           mkdir "$RUNNER_TEMP/wasi/pkg" && tar -xzf "$RUNNER_TEMP"/wasi/*.tgz -C "$RUNNER_TEMP/wasi/pkg"
           version=$(node -p 'require("./packages/next/package.json").version')
