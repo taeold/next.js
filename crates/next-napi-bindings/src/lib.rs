@@ -41,6 +41,7 @@ use swc_core::{
 
 pub mod code_frame;
 pub mod css;
+pub mod fetch;
 pub mod lockfile;
 pub mod mdx;
 pub mod minify;

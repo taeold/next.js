@@ -359,6 +359,26 @@ async function loadWasiNapiWithFallback(): Promise<Binding> {
   )
 }
 
+// Serves an HTTP request from the WASI binding (see registerFetch in next-napi-bindings).
+async function fetchForWasiBinding(request: {
+  url: string
+  headers: Array<{ name: string; value: string }>
+  timeoutMs?: number
+}) {
+  const response = await fetch(request.url, {
+    headers: request.headers.map(({ name, value }): [string, string] => [
+      name,
+      value,
+    ]),
+    signal: request.timeoutMs ? AbortSignal.timeout(request.timeoutMs) : undefined,
+  })
+  return {
+    status: response.status,
+    headers: [...response.headers].map(([name, value]) => ({ name, value })),
+    body: Buffer.from(await response.arrayBuffer()),
+  }
+}
+
 async function loadWasiNapiBinding(importPath = ''): Promise<Binding> {
   const packageName = '@next/swc-wasm-wasi'
   const testDirectory = process.env.NEXT_TEST_WASI_DIR
@@ -438,6 +458,12 @@ async function loadWasiNapiBinding(importPath = ''): Promise<Binding> {
       throw new Error(
         `Expected ${packageName} to target wasm32-wasip1-threads, received ${target ?? 'unknown'}.`
       )
+    }
+    // The wasm build has no HTTP client of its own; Turbopack's fetches (next/font/google) go through
+    // this process's fetch. Bindings built before registerFetch existed keep reporting that HTTP is
+    // unsupported.
+    if (typeof (rawBindings as any).registerFetch === 'function') {
+      ;(rawBindings as any).registerFetch(fetchForWasiBinding)
     }
     if (process.env.NEXT_TEST_WASI_TARGET_LOG) {
       await appendFile(

@@ -29,9 +29,6 @@ pub struct FetchError {
 
 impl FetchError {
     pub(crate) fn from_reqwest_error(error: &reqwest::Error, url: &str) -> FetchError {
-        #[cfg(target_family = "wasm")]
-        let kind = FetchErrorKind::Unsupported;
-        #[cfg(not(target_family = "wasm"))]
         let kind = if error.is_connect() {
             FetchErrorKind::Connect
         } else if error.is_timeout() {
@@ -40,6 +37,12 @@ impl FetchError {
             FetchErrorKind::Status(status.as_u16())
         } else {
             FetchErrorKind::Other
+        };
+        #[cfg(target_family = "wasm")]
+        let kind = if error.is_unsupported() {
+            FetchErrorKind::Unsupported
+        } else {
+            kind
         };
 
         FetchError {

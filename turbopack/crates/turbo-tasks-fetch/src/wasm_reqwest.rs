@@ -1,9 +1,4 @@
-//! Reports HTTP as unsupported on wasm, in the shape of the `reqwest` API this crate consumes.
-//!
-//! This is **not** a client and does not try to look like one: building a client fails immediately
-//! with a clear error, so no request is ever attempted, nothing is retried, and no response is ever
-//! produced. The remaining types exist only so that [`crate::client`] type-checks; they are
-//! unreachable.
+//! HTTP for wasm builds, in the shape of the `reqwest` API this crate consumes, served by the host.
 //!
 //! `reqwest` itself cannot serve wasm here. Its only wasm backend targets `wasm32-unknown-unknown`
 //! and is built on the browser `fetch` API via `wasm-bindgen`. Under `wasm32-wasip1-threads` that
@@ -12,50 +7,106 @@
 //! `Error::is_connect`) and — fatally — `!Send`, which `turbo-tasks` requires of every task future.
 //! WASI preview1 has no sockets to build a native client on either.
 //!
-//! Supporting HTTP on wasm needs the host to provide it: for wasm builds of the Next.js bindings
-//! that means a napi callback into the JS `fetch`, kept behind the existing
-//! [`crate::FetchClientConfig`] interface so callers are unaffected. That is deliberately a
-//! separate change, because it cannot be tested until the wasm bindings can be instantiated. Until
-//! then the only consumer, `next/font/google`, reports this error instead of silently producing
-//! nothing.
+//! So the host provides HTTP: it registers a fetch with [`set_host_fetch`] (the Next.js bindings
+//! do this with a napi callback into the JS `fetch`), and requests go through it behind the
+//! existing [`crate::FetchClientConfig`] interface, so callers are unaffected. Without a host
+//! fetch, building a client fails with a clear error, so features that fetch at build time, such as
+//! `next/font/google`, report it instead of silently producing nothing.
 
-use std::{fmt, time::Duration};
+use std::{
+    fmt,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// The only value this module ever produces.
+/// A GET request for the host to perform.
+#[derive(Clone, Debug)]
+pub struct HostRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    /// Maximum time for the entire request, from [`crate::FetchClientConfig::timeout`].
+    pub timeout: Option<Duration>,
+}
+
+/// The host's complete response.
 #[derive(Debug)]
-pub struct Error;
+pub struct HostResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// Performs a request on the host. Fails with a message when no response arrived (a network error,
+/// a timeout, ...).
+pub type HostFetch = Arc<
+    dyn Fn(HostRequest) -> Pin<Box<dyn Future<Output = std::result::Result<HostResponse, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+static HOST_FETCH: OnceLock<HostFetch> = OnceLock::new();
+
+/// Serves this crate's HTTP requests on wasm with the host's fetch. Returns `false` if one was
+/// already set.
+pub fn set_host_fetch(fetch: HostFetch) -> bool {
+    HOST_FETCH.set(fetch).is_ok()
+}
+
+#[derive(Debug)]
+pub enum Error {
+    /// No host fetch was registered, so there is no HTTP client at all.
+    Unsupported,
+    /// The host's fetch failed before a response arrived.
+    Request(String),
+    /// The response had a 4xx or 5xx status.
+    Status(StatusCode),
+}
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(
-            "HTTP requests are not supported in wasm builds of Next.js: this platform has no HTTP \
-             client. Features that fetch at build time, such as `next/font/google`, cannot be \
-             used here — self-host the assets, or use a platform with native Next.js binaries.",
-        )
+        match self {
+            Error::Unsupported => f.write_str(
+                "HTTP requests are not supported in this wasm build of Next.js: the host provides \
+                 no HTTP client. Features that fetch at build time, such as `next/font/google`, \
+                 cannot be used here — self-host the assets, or use a platform with native Next.js \
+                 binaries.",
+            ),
+            Error::Request(message) => write!(f, "request failed: {message}"),
+            Error::Status(status) => write!(f, "HTTP status {}", status.0),
+        }
     }
 }
 
 impl std::error::Error for Error {}
 
 impl Error {
-    /// Not a connection failure — the platform has no client at all, so retrying cannot help.
-    pub fn is_connect(&self) -> bool {
-        false
+    /// Retrying cannot help: the platform has no client.
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, Error::Unsupported)
     }
 
-    /// Not a timeout, for the same reason.
+    /// The host reports network failures and timeouts alike as a failed request.
+    pub fn is_connect(&self) -> bool {
+        matches!(self, Error::Request(_))
+    }
+
     pub fn is_timeout(&self) -> bool {
         false
     }
 
     pub fn is_request(&self) -> bool {
-        true
+        matches!(self, Error::Request(_))
     }
 
     pub fn status(&self) -> Option<StatusCode> {
-        None
+        match self {
+            Error::Status(status) => Some(*status),
+            _ => None,
+        }
     }
 }
 
@@ -72,77 +123,122 @@ impl StatusCode {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Client;
+#[derive(Clone)]
+pub struct Client {
+    fetch: HostFetch,
+    timeout: Option<Duration>,
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Client").field("timeout", &self.timeout).finish_non_exhaustive()
+    }
+}
 
 impl Client {
     pub fn builder() -> ClientBuilder {
-        ClientBuilder
+        ClientBuilder { timeout: None }
     }
 
-    /// Unreachable: [`ClientBuilder::build`] never yields a `Client`.
-    pub fn get(&self, _url: &str) -> RequestBuilder {
-        unreachable!("no HTTP client can be built on wasm")
+    pub fn get(&self, url: &str) -> RequestBuilder {
+        RequestBuilder {
+            client: self.clone(),
+            url: url.to_string(),
+            headers: Vec::new(),
+        }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct ClientBuilder;
+pub struct ClientBuilder {
+    timeout: Option<Duration>,
+}
 
 impl ClientBuilder {
+    /// The host's fetch has no separate connect phase; [`ClientBuilder::timeout`] bounds the
+    /// whole request.
     pub fn connect_timeout(self, _timeout: Duration) -> Self {
         self
     }
 
-    pub fn timeout(self, _timeout: Duration) -> Self {
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
-    /// Fails, so callers get the error at client construction rather than per request.
+    /// Fails without a host fetch, so callers get the error at client construction rather than
+    /// per request.
     pub fn build(self) -> Result<Client> {
-        Err(Error)
+        let fetch = HOST_FETCH.get().cloned().ok_or(Error::Unsupported)?;
+        Ok(Client {
+            fetch,
+            timeout: self.timeout,
+        })
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct RequestBuilder;
+pub struct RequestBuilder {
+    client: Client,
+    url: String,
+    headers: Vec<(String, String)>,
+}
 
 impl RequestBuilder {
-    pub fn header(self, _name: &str, _value: &str) -> Self {
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
         self
     }
 
     pub fn try_clone(&self) -> Option<Self> {
-        Some(RequestBuilder)
+        Some(self.clone())
     }
 
-    /// Unreachable: a `RequestBuilder` requires a `Client`, which cannot be built.
     pub async fn send(self) -> Result<Response> {
-        Err(Error)
+        let request = HostRequest {
+            url: self.url,
+            headers: self.headers,
+            timeout: self.client.timeout,
+        };
+        let response = (self.client.fetch)(request).await.map_err(Error::Request)?;
+        let mut headers = header::HeaderMap::new();
+        for (name, value) in response.headers {
+            headers.insert(&name, header::HeaderValue::new(value));
+        }
+        Ok(Response {
+            status: StatusCode(response.status),
+            headers,
+            body: response.body,
+        })
     }
 }
 
-/// Unreachable: no request is ever sent, so no response is ever constructed.
 #[derive(Debug)]
 pub struct Response {
-    _priv: (),
+    status: StatusCode,
+    headers: header::HeaderMap,
+    body: Vec<u8>,
 }
 
 impl Response {
     pub fn error_for_status(self) -> Result<Self> {
-        Err(Error)
+        if self.status.0 >= 400 {
+            Err(Error::Status(self.status))
+        } else {
+            Ok(self)
+        }
     }
 
     pub fn status(&self) -> StatusCode {
-        unreachable!("no response can be produced on wasm")
+        self.status
     }
 
     pub fn headers(&self) -> &header::HeaderMap {
-        unreachable!("no response can be produced on wasm")
+        &self.headers
     }
 
     pub async fn bytes(self) -> Result<Vec<u8>> {
-        Err(Error)
+        Ok(self.body)
     }
 }
 
@@ -157,6 +253,10 @@ pub mod header {
     impl HeaderValue {
         pub fn from_static(value: &'static str) -> Self {
             HeaderValue(value.to_string())
+        }
+
+        pub(crate) fn new(value: String) -> Self {
+            HeaderValue(value)
         }
 
         pub fn to_str(&self) -> Result<&str, std::str::Utf8Error> {
